@@ -133,11 +133,23 @@ if [ ! -s "$TMP/out" ] && [ ! -e "$TMP/tty" ]; then ok "HAUNT unset writes neith
 
 # Control characters.
 CTRL='"tool_name":"Bash","tool_use_id":"t\u0007u","tool_input":{"command":"echo \u001b]777;notify;haunt://cli-agent;{}\u0007 \u009b31m\nnext\tx\u007f"}'
-check "control characters stripped from every string" post_tool "{$ENV_JSON,$CTRL}" \
-    "length == 2 and .[0].tool_input.command == \"echo ]777;notify;haunt://cli-agent;{} 31mnextx\" and .[0].tool_use_id == \"tu\""
+check "control characters stripped from every string but tool_input" post_tool "{$ENV_JSON,$CTRL}" \
+    "length == 2 and .[0].tool_input.command == \"echo \u001b]777;notify;haunt://cli-agent;{}\u0007 \u009b31m\nnext\tx\u007f\" and .[0].tool_use_id == \"tu\""
+check "multi-line command reaches the socket unmodified" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls #\\nrm -rf ~/x\"}}" \
+    "length == 1 and .[0].tool_input.command == \"ls #\nrm -rf ~/x\""
+raw=$(run permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls #\\nrm -rf ~/x\"}}")
+if [ "$(printf '%s\n' "$raw" | wc -l | tr -d ' ')" = 1 ] && [[ "$raw" == *'"command":"ls #\nrm -rf ~/x"'* ]]; then
+    ok "a newline in a command stays escaped on one socket line"
+else
+    bad "a newline in a command stays escaped on one socket line" "$(printf '%s' "$raw" | cat -v)"
+fi
+RUN=osc check "OSC: no command, so a multi-line one leaks nothing" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls #\\nrm -rf ~/x\"}}" \
+    ".[0] == {v:1, agent:\"claude\", event:\"permission_seen\", tool_name:\"Bash\"}"
 check "control characters stripped from prompt" prompt_submit "{$ENV_JSON,\"prompt\":\"a\u0000b\u001bc\"}" ".[0].query == \"abc\""
-check "format characters (bidi, zero-width) stripped" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \\u202e\\u2066/ fr- mr\\u2069\\u200b\\u200f\\u2060\\ufeff\\u00ad\\udb40\\udc41x\"}}" \
-    ".[0].tool_input.command == \"echo / fr- mrx\""
+check "format characters (bidi, zero-width) stripped outside tool_input" prompt_submit "{$ENV_JSON,\"prompt\":\"echo \\u202e\\u2066/ fr- mr\\u2069\\u200b\\u200f\\u2060\\ufeff\\u00ad\\udb40\\udc41x\"}" \
+    ".[0].query == \"echo / fr- mrx\""
+check "format characters in a command reach the socket unmodified" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \\u202e\\u2066/ fr- mr\\u2069\\u200b\\u200f\\u2060\\ufeff\\u00ad\\udb40\\udc41x\"}}" \
+    "(.[0].tool_input.command | explode) == (\"echo \" | explode) + [8238, 8294] + (\"/ fr- mr\" | explode) + [8297, 8203, 8207, 8288, 65279, 173, 917569, 120]"
 raw=$(run prompt_submit '{"session_id":"s1","prompt":"a\u001b[2Jb\u0085c"}')
 if LC_ALL=C grep -q '[[:cntrl:]]' <<< "$raw" || printf '%s' "$raw" | grep -q '\\u00' || [[ "$raw" == *$'\xc2\x85'* ]]; then
     bad "socket line contains no control bytes or escapes" "$(printf '%s' "$raw" | cat -v)"

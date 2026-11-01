@@ -49,7 +49,10 @@ def fit:
     end
   # An event whose ids alone overflow cannot be delivered intact, so it is dropped.
   | select(bytes <= $max);
-def finalize: with_entries(select(.value != null)) | walk(clean) | fit;
+# tool_input goes over the socket unmodified (JSON escapes keep it on one line), so the core can show a
+# hidden newline or bidi override instead of an approval preview that looks harmless.
+def finalize: with_entries(select(.value != null)) | .tool_input as $ti | del(.tool_input) | walk(clean)
+  | (if $ti == null then . else . + {tool_input:$ti} end) | fit;
 # OSC is status-only in the core, so it carries no nonce: just what moves status and progress, plus a cut title.
 def status:
   with_entries(select(.value != null)) | walk(clean)

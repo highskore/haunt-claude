@@ -54,7 +54,7 @@ Each body is one line of compact JSON. Fields that are null or absent are omitte
 - socket lines: at most **60,000 bytes**, under the core's 64 KB line limit
 - OSC bodies: at most **250 bytes**. Ghostty cuts a notification body at 255 bytes, and a cut body arrives as broken JSON. After the title is cut, a body that is still too big drops `agent_type`, and is dropped if even that doesn't make it fit. The tests check that every fallback body is valid JSON within 250 bytes
 
-Every string is stripped of C0 controls (U+0000 to U+001F), DEL, C1 controls (U+007F to U+009F) and Unicode format characters (Cf: bidi overrides, zero-widths, U+FEFF, soft hyphen, tags) before it is encoded. The body therefore never contains a control character or a `\u00XX` escape for one. The core rejects an OSC body containing a raw control character. Strings that decode to one anyway have it stripped (whitespace becomes a space).
+Every string except those in `tool_input` is stripped of C0 controls (U+0000 to U+001F), DEL, C1 controls (U+007F to U+009F) and Unicode format characters (Cf: bidi overrides, zero-widths, U+FEFF, soft hyphen, tags) before it is encoded. On the socket, `tool_input` strings (`command`, `url`, `file_path`) go unmodified, so the core can show a hidden newline or bidi override in an approval preview instead of a harmless-looking cleaned one; jq's JSON escapes (`\n`, `\u001b`) keep them on one line. OSC bodies carry no `tool_input`, so they never contain a control character or a `\u00XX` escape for one. The core rejects a body containing a raw control character.
 
 ### Envelope (every event)
 
