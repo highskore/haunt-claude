@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 LIB='
 def nonce: ($ENV.HAUNT_HOOK_NONCE // "") | if . == "" then null else . end;
-def base($e): {v:1, agent:"claude", event:$e, session_id, cwd, agent_id, agent_type, permission_mode, hook_nonce:nonce};
+def base($e): {v:1, agent:"claude", event:$e, session_id, cwd, agent_id, agent_type, permission_mode, nonce:nonce};
 def preview: (.tool_input // {}) | if type == "object" then {command, url, file_path} | with_entries(select(.value != null)) else {} end;
 def tool: {tool_name, tool_use_id, tool_input:preview};
 def clean: if type == "string" then explode | map(select(. >= 32 and (. < 127 or . > 159))) | implode else . end;
@@ -34,7 +34,7 @@ def fit:
   reduce (["tool_input","command"], ["tool_input","url"], ["tool_input","file_path"], ["summary"], ["query"],
           ["message"], ["description"], ["task_subject"], ["cwd"]) as $p (.; shrink($p))
   | if bytes <= $max then .
-    else {v, agent, event, session_id, agent_id, tool_use_id, task_id, tool_name, hook_nonce}
+    else {v, agent, event, session_id, agent_id, tool_use_id, task_id, tool_name, nonce}
       | with_entries(select(.value != null)) + {truncated:true}
     end
   # An event whose ids alone overflow cannot be delivered intact, so it is dropped.

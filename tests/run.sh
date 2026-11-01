@@ -35,7 +35,7 @@ check() {
 }
 
 ENV_JSON='"session_id":"s1","cwd":"/w","permission_mode":"default"'
-E="(.[0] | .v == 1 and .agent == \"claude\" and .session_id == \"s1\" and .cwd == \"/w\" and .hook_nonce == \"n0nce\")"
+E="(.[0] | .v == 1 and .agent == \"claude\" and .session_id == \"s1\" and .cwd == \"/w\" and .nonce == \"n0nce\")"
 
 # bash -n
 for f in "$HOOK" "$0"; do
@@ -92,14 +92,14 @@ check "subagent_stop" subagent_stop "{$ENV_JSON,\"agent_id\":\"a9\"}" \
 check "stop" stop "{$ENV_JSON,\"stop_hook_active\":false}" \
     "length == 1 and $E and .[0].event == \"stop\" and (.[0] | has(\"stop_hook_active\") | not)"
 check "null fields are dropped" stop '{"session_id":"s1"}' \
-    ".[0] | keys == [\"agent\",\"event\",\"hook_nonce\",\"session_id\",\"v\"]"
+    ".[0] | keys == [\"agent\",\"event\",\"nonce\",\"session_id\",\"v\"]"
 check "unknown kind emits nothing" bogus "{$ENV_JSON}" "length == 0"
 check "invalid stdin emits nothing" stop 'not json' "length == 0"
 
 # Nonce.
-T_NONCE="" check "nonce absent when HAUNT_HOOK_NONCE empty" stop "{$ENV_JSON}" "length == 1 and (.[0] | has(\"hook_nonce\") | not)"
+T_NONCE="" check "nonce absent when HAUNT_HOOK_NONCE empty" stop "{$ENV_JSON}" "length == 1 and (.[0] | has(\"nonce\") | not)"
 got=$(printf '{}' | env -u HAUNT_HOOK_NONCE HAUNT=1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop | jq -r '.terminalSequence')
-case "$got" in *hook_nonce*) bad "nonce absent when HAUNT_HOOK_NONCE unset" "$got" ;; *) ok "nonce absent when HAUNT_HOOK_NONCE unset" ;; esac
+case "$got" in *'"nonce"'*) bad "nonce absent when HAUNT_HOOK_NONCE unset" "$got" ;; *) ok "nonce absent when HAUNT_HOOK_NONCE unset" ;; esac
 if grep -q 'HAUNT_HOOK_NONCE' "$HERE/../hooks/hooks.json"; then bad "nonce never on a command line"; else ok "nonce never on a command line"; fi
 
 # HAUNT gating.
@@ -110,7 +110,7 @@ if [ ! -s "$TMP/out" ] && [ ! -e "$TMP/tty" ]; then ok "HAUNT unset writes neith
 
 # Delivery: a writable tty gets the raw sequences and stdout stays empty.
 printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_HOOK_TTY="$TMP/tty" "$HOOK" stop > "$TMP/out"
-if [ ! -s "$TMP/out" ] && [ "$(cat "$TMP/tty")" = "$PREFIX"'{"v":1,"agent":"claude","event":"stop","session_id":"s1","hook_nonce":"n0nce"}'$'\a' ]; then
+if [ ! -s "$TMP/out" ] && [ "$(cat "$TMP/tty")" = "$PREFIX"'{"v":1,"agent":"claude","event":"stop","session_id":"s1","nonce":"n0nce"}'$'\a' ]; then
     ok "tty delivery"
 else
     bad "tty delivery" "$(cat -v "$TMP/tty" 2>/dev/null)"
@@ -150,7 +150,7 @@ if [ "$max" -le 2000 ] && [ "$max" -gt 1900 ]; then ok "multibyte payload fits o
 check "tool input truncated before other bulky fields" post_tool "{$ENV_JSON,\"agent_id\":\"a1\",\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"keep me\",\"command\":\"$BIG\"},\"tool_response\":{\"status\":\"completed\",\"agentId\":\"a1\"}}" \
     ".[0].event == \"subagent_result\" and .[0].description == \"keep me\" and .[1].event == \"tool_done\" and .[1].truncated == true"
 check "oversized non-bulky field falls back to the minimal envelope" session_start "{$ENV_JSON,\"source\":\"$BIG\"}" \
-    "length == 1 and .[0] == {v:1, agent:\"claude\", event:\"session_start\", session_id:\"s1\", hook_nonce:\"n0nce\", truncated:true}"
+    "length == 1 and .[0] == {v:1, agent:\"claude\", event:\"session_start\", session_id:\"s1\", nonce:\"n0nce\", truncated:true}"
 check "event whose ids overflow is dropped" stop "{\"session_id\":\"$BIG\"}" "length == 0"
 EMOJI=$(for _ in $(seq 700); do printf "\xf0\x9f\x91\xbb"; done)
 for extra in 0 1 2 3 5 9; do
