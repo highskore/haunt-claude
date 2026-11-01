@@ -136,6 +136,8 @@ CTRL='"tool_name":"Bash","tool_use_id":"t\u0007u","tool_input":{"command":"echo 
 check "control characters stripped from every string" post_tool "{$ENV_JSON,$CTRL}" \
     "length == 2 and .[0].tool_input.command == \"echo ]777;notify;haunt://cli-agent;{} 31mnextx\" and .[0].tool_use_id == \"tu\""
 check "control characters stripped from prompt" prompt_submit "{$ENV_JSON,\"prompt\":\"a\u0000b\u001bc\"}" ".[0].query == \"abc\""
+check "format characters (bidi, zero-width) stripped" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo \\u202e\\u2066/ fr- mr\\u2069\\u200b\\u200f\\u2060\\ufeff\\u00ad\\udb40\\udc41x\"}}" \
+    ".[0].tool_input.command == \"echo / fr- mrx\""
 raw=$(run prompt_submit '{"session_id":"s1","prompt":"a\u001b[2Jb\u0085c"}')
 if LC_ALL=C grep -q '[[:cntrl:]]' <<< "$raw" || printf '%s' "$raw" | grep -q '\\u00' || [[ "$raw" == *$'\xc2\x85'* ]]; then
     bad "socket line contains no control bytes or escapes" "$(printf '%s' "$raw" | cat -v)"
@@ -180,7 +182,7 @@ listen && kill "$LPID" 2> /dev/null; wait "$LPID" 2> /dev/null
 printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/dead-tty" "$HOOK" stop > "$TMP/out"
 if [ -S "$TMP/s" ] && [ ! -s "$TMP/out" ] && [ ! -e "$TMP/dead-tty" ]; then ok "dead socket: nothing sent, no OSC"; else bad "dead socket: nothing sent, no OSC" "$(cat "$TMP/out")"; fi
 
-# OSC fallback: status fields only, no nonce, under Ghostty's 255-byte body cap.
+# OSC fallback: status fields and a cut title only, no nonce, at most 250 bytes (Ghostty cuts at 255).
 RUN=osc check "OSC: status fields only" post_tool "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"Explore\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu1\",\"tool_input\":{\"command\":\"ls\"}}" \
     "map(.event) == [\"tool_done\",\"tool_ran\",\"subagent_tool\"] and all(.[]; . == {v:1, agent:\"claude\", event:.event, agent_id:\"a9\", agent_type:\"Explore\", tool_name:\"Bash\"})"
 RUN=osc check "OSC: task progress survives" post_tool "{$ENV_JSON,\"tool_name\":\"TaskUpdate\",\"tool_input\":{\"taskId\":3,\"status\":\"completed\"}}" \
@@ -195,8 +197,24 @@ LONGTYPE=$(head -c 200 /dev/zero | tr '\0' 't')
 RUN=osc check "OSC: a long agent_type is dropped to fit" subagent_start "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"$LONGTYPE\"}" \
     ".[0] == {v:1, agent:\"claude\", event:\"subagent_start\", agent_id:\"a9\"}"
 RUN=osc check "OSC: an event that cannot fit is dropped" pre_tool "{$ENV_JSON,\"tool_name\":\"$LONGTYPE$LONGTYPE\",\"tool_input\":{}}" "length == 0"
-max=$(for k in pre_tool post_tool permission_request subagent_start stop; do osc "$k" "{$ENV_JSON,\"agent_id\":\"$BIG\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$BIG\"}}"; done | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
-if [ "$max" -le 254 ]; then ok "OSC: every body under 255 bytes ($max)"; else bad "OSC: every body under 255 bytes" "$max"; fi
+RUN=osc check "OSC: a long task title is cut to fit" task_created "{$ENV_JSON,\"task_id\":7,\"task_subject\":\"$BIG\"}" \
+    ".[0].event == \"task_created\" and .[0].task_id == \"7\" and .[0].truncated == true and (.[0].task_subject | endswith(\"…\") and length > 100)"
+RUN=osc check "OSC: a spawn description is cut to fit" pre_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"$WIDE\"}}" \
+    ".[1].event == \"subagent_spawn\" and (.[1].description | endswith(\"…\"))"
+# Every fallback body, for every hook kind and with oversized, multibyte and 4-byte input, is valid JSON within 250 bytes.
+: > "$TMP/oscall"
+for k in session_start prompt_submit task_created pre_tool post_tool post_tool_failure permission_request notification subagent_start subagent_stop stop; do
+    for fill in "$BIG" "$WIDE" "$EMOJI"; do
+        for tool in Bash Agent TaskUpdate TodoWrite; do
+            osc "$k" "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"Explore\",\"task_id\":1,\"task_subject\":\"$fill\",\"prompt\":\"$fill\",\"message\":\"$fill\",\"notification_type\":\"permission_prompt\",\"tool_name\":\"$tool\",\"tool_input\":{\"command\":\"$fill\",\"description\":\"$fill\",\"taskId\":2,\"status\":\"completed\",\"todos\":[]}}" >> "$TMP/oscall"
+        done
+    done
+done
+count=$(wc -l < "$TMP/oscall" | tr -d " ")
+over=$(LC_ALL=C awk 'length($0) > 250' "$TMP/oscall" | wc -l | tr -d " ")
+invalid=$(while IFS= read -r b; do printf '%s' "$b" | jq -e . > /dev/null 2>&1 || echo x; done < "$TMP/oscall" | wc -l | tr -d " ")
+max=$(LC_ALL=C awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$TMP/oscall")
+if [ "$count" -gt 100 ] && [ "$over" -eq 0 ] && [ "$invalid" -eq 0 ]; then ok "OSC: $count bodies, all valid JSON, max $max bytes"; else bad "OSC: bodies valid and within 250 bytes" "count $count, over $over, invalid $invalid, max $max"; fi
 RUN=osc check "OSC: control characters stripped" pre_tool "{$ENV_JSON,\"tool_name\":\"Ba\u001b]sh\u0007\",\"tool_input\":{}}" ".[0].tool_name == \"Ba]sh\""
 
 # OSC delivery paths: a writable tty gets the raw sequences, else terminalSequence on stdout.

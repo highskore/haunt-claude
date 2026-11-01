@@ -8,8 +8,8 @@
 
 KIND="$1"
 INPUT=$(cat)
-# Ghostty cuts a notification body at 255 bytes.
-OSC_MAX=254
+# Ghostty cuts a notification body at 255 bytes; past that it arrives as broken JSON.
+OSC_MAX=250
 # The socket takes 64 KB lines; the margin covers the newline. Tests may lower it.
 SOCK_MAX="${HAUNT_HOOK_SOCK_MAX:-60000}"
 SOCK="${HAUNT_SOCK:-}"
@@ -23,7 +23,12 @@ def sid: if $sock then env("HAUNT_SURFACE_ID") else null end;
 def base($e): {v:1, agent:"claude", event:$e, surface_id:sid, session_id, cwd, agent_id, agent_type, permission_mode, nonce:nonce};
 def preview: (.tool_input // {}) | if type == "object" then {command, url, file_path} | with_entries(select(.value != null)) else {} end;
 def tool: {tool_name, tool_use_id, tool_input:preview};
-def clean: if type == "string" then explode | map(select(. >= 32 and (. < 127 or . > 159))) | implode else . end;
+# Unicode Cf (format) characters, such as bidi overrides and zero-widths, which can disguise text.
+def isfmt: . == 173 or (. >= 1536 and . <= 1541) or . == 1564 or . == 1757 or . == 1807 or (. >= 2192 and . <= 2193) or . == 2274
+  or . == 6158 or (. >= 8203 and . <= 8207) or (. >= 8234 and . <= 8238) or (. >= 8288 and . <= 8292) or (. >= 8294 and . <= 8303)
+  or . == 65279 or (. >= 65529 and . <= 65531) or . == 69821 or . == 69837 or (. >= 78896 and . <= 78911)
+  or (. >= 113824 and . <= 113827) or (. >= 119155 and . <= 119162) or . == 917505 or (. >= 917536 and . <= 917631);
+def clean: if type == "string" then explode | map(select(. >= 32 and (. < 127 or . > 159) and (isfmt | not))) | implode else . end;
 def bytes: tojson | utf8bytelength;
 def shrink($p):
   if bytes <= $max then .
@@ -45,11 +50,12 @@ def fit:
   # An event whose ids alone overflow cannot be delivered intact, so it is dropped.
   | select(bytes <= $max);
 def finalize: with_entries(select(.value != null)) | walk(clean) | fit;
-# OSC is status-only in the core, so it carries no nonce and no free text, just what moves status and progress.
+# OSC is status-only in the core, so it carries no nonce: just what moves status and progress, plus a cut title.
 def status:
   with_entries(select(.value != null)) | walk(clean)
-  | {v, agent, event, agent_id, agent_type, task_id, task_status, tool_name, tool_count, todos_done, notification_type}
+  | {v, agent, event, agent_id, agent_type, task_id, task_status, task_subject, description, tool_name, tool_count, todos_done, notification_type}
   | with_entries(select(.value != null))
+  | shrink(["task_subject"]) | shrink(["description"])
   | if bytes <= $max then . else del(.agent_type) end
   | select(bytes <= $max);
 '

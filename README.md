@@ -40,7 +40,7 @@ These are plain bash plus jq, `nc` and a perl listener that stands in for the so
 
 If the socket is there but the send fails (haunt died and left the socket file), the event is dropped. It is never downgraded to OSC.
 
-**OSC 777 (fallback).** The hook falls back to OSC only when the socket isn't there: `HAUNT_SOCK` is unset, missing or not a socket, `HAUNT_SURFACE_ID` is unset, or `nc` is missing. Each event is one sequence: `ESC ] 777 ; notify ; haunt://cli-agent ; <json> BEL`. A hook that fires several events concatenates them. Any program in the pty can print these sequences, so the core treats OSC events as status-only. The body therefore carries only what moves status and progress: `{v, agent, event, agent_id, agent_type, task_id, task_status, tool_name, tool_count, todos_done, notification_type}`, with absent fields omitted. It never carries the nonce, the cwd, the session id, prompts, commands or any other free text. Ghostty also delivers at most one notification per second and only the first sequence of a burst, so the fallback is coarse by nature.
+**OSC 777 (fallback).** The hook falls back to OSC only when the socket isn't there: `HAUNT_SOCK` is unset, missing or not a socket, `HAUNT_SURFACE_ID` is unset, or `nc` is missing. Each event is one sequence: `ESC ] 777 ; notify ; haunt://cli-agent ; <json> BEL`. A hook that fires several events concatenates them. Any program in the pty can print these sequences, so the core treats OSC events as status-only. The body therefore carries only what moves status and progress, plus a title: `{v, agent, event, agent_id, agent_type, task_id, task_status, task_subject, description, tool_name, tool_count, todos_done, notification_type}`, with absent fields omitted. `task_subject` and `description` are cut to fit, ending with `…` and setting `truncated`. It never carries the nonce, the cwd, the session id, prompts, commands or messages. Ghostty also delivers at most one notification per second and only the first sequence of a burst, so the fallback is coarse by nature.
 
 1. The hook first tries to write the sequences to `/dev/tty`. That works on older Claude Code, which rejects unknown output fields but still gives hooks a terminal.
 2. If `/dev/tty` cannot be opened, the hook prints `{"terminalSequence":"<sequences>"}` and Claude Code writes the sequences itself. That is the path from Claude Code 2.1.141 on, where hooks have no controlling terminal.
@@ -52,9 +52,9 @@ The hook always exits 0 and never blocks the agent for longer than `nc`'s 2-seco
 Each body is one line of compact JSON. Fields that are null or absent are omitted. Size limits:
 
 - socket lines: at most **60,000 bytes**, under the core's 64 KB line limit
-- OSC bodies: at most **254 bytes**, because Ghostty cuts a notification body at 255. A body that is still too big drops `agent_type`, and is dropped if even that doesn't make it fit
+- OSC bodies: at most **250 bytes**. Ghostty cuts a notification body at 255 bytes, and a cut body arrives as broken JSON. After the title is cut, a body that is still too big drops `agent_type`, and is dropped if even that doesn't make it fit. The tests check that every fallback body is valid JSON within 250 bytes
 
-Every string is stripped of C0 controls (U+0000 to U+001F), DEL and C1 controls (U+007F to U+009F) before it is encoded. The body therefore never contains a control character or a `\u00XX` escape for one. The core rejects an OSC body containing a raw control character. Strings that decode to one anyway have it stripped (whitespace becomes a space).
+Every string is stripped of C0 controls (U+0000 to U+001F), DEL, C1 controls (U+007F to U+009F) and Unicode format characters (Cf: bidi overrides, zero-widths, U+FEFF, soft hyphen, tags) before it is encoded. The body therefore never contains a control character or a `\u00XX` escape for one. The core rejects an OSC body containing a raw control character. Strings that decode to one anyway have it stripped (whitespace becomes a space).
 
 ### Envelope (every event)
 
