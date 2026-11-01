@@ -8,10 +8,10 @@
 
 KIND="$1"
 INPUT=$(cat)
-# libghostty's OSC buffer is 2,048 bytes and also holds "777;notify;haunt://cli-agent;".
-OSC_MAX=2000
-# The socket takes 64 KB lines; the margin covers the newline.
-SOCK_MAX=60000
+# Ghostty cuts a notification body at 255 bytes.
+OSC_MAX=254
+# The socket takes 64 KB lines; the margin covers the newline. Tests may lower it.
+SOCK_MAX="${HAUNT_HOOK_SOCK_MAX:-60000}"
 SOCK="${HAUNT_SOCK:-}"
 TTY="${HAUNT_HOOK_TTY:-/dev/tty}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,6 +45,13 @@ def fit:
   # An event whose ids alone overflow cannot be delivered intact, so it is dropped.
   | select(bytes <= $max);
 def finalize: with_entries(select(.value != null)) | walk(clean) | fit;
+# OSC is status-only in the core, so it carries no nonce and no free text, just what moves status and progress.
+def status:
+  with_entries(select(.value != null)) | walk(clean)
+  | {v, agent, event, agent_id, agent_type, task_id, task_status, tool_name, tool_count, todos_done, notification_type}
+  | with_entries(select(.value != null))
+  | if bytes <= $max then . else del(.agent_type) end
+  | select(bytes <= $max);
 '
 
 case "$KIND" in
@@ -97,14 +104,14 @@ VERSION=""
 # bodies <max bytes> <true for the socket>
 bodies() {
     printf '%s' "$INPUT" | jq -c --argjson max "$1" --argjson sock "$2" --arg version "$VERSION" \
-        "$LIB ($EXPR) | finalize | if .plugin_version == \"\" then del(.plugin_version) else . end" 2>/dev/null
+        "$LIB ($EXPR) | if \$sock then finalize | if .plugin_version == \"\" then del(.plugin_version) else . end else status end" 2>/dev/null
 }
 
-# The socket is the authenticated path; the OSC fallback below counts for status only.
+# The socket is the authenticated path. If it is there, a failed send is dropped rather than downgraded to OSC.
 if [ -n "$SOCK" ] && [ -S "$SOCK" ] && [ -n "${HAUNT_SURFACE_ID:-}" ] && command -v nc > /dev/null; then
     LINES=$(bodies "$SOCK_MAX" true) || exit 0
-    [ -n "$LINES" ] || exit 0
-    printf '%s\n' "$LINES" | nc -U -w 2 "$SOCK" > /dev/null 2>&1 && exit 0
+    [ -n "$LINES" ] && printf '%s\n' "$LINES" | nc -U -w 2 "$SOCK" > /dev/null 2>&1
+    exit 0
 fi
 
 BODIES=$(bodies "$OSC_MAX" false) || exit 0

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Plain-bash tests for scripts/haunt-hook.sh. Needs jq. Usage: hooks/tests/run.sh
+# Plain-bash tests for scripts/haunt-hook.sh. Needs jq, nc and perl. Usage: hooks/tests/run.sh
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,10 +15,33 @@ FAIL=0
 ok() { PASS=$((PASS + 1)); printf 'ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '     %s\n' "$2"; }
 
-# Runs the hook with no usable tty and prints each OSC body on its own line.
+# A perl listener stands in for haunt: one connection, never writes back, prints what arrived.
+# (`nc -lU` half-closes when its stdin ends, and macOS nc then stops sending mid-message.)
+listen() {
+    rm -f "$TMP/s" "$TMP/got"
+    perl -MIO::Socket::UNIX -e 'alarm 10; $s = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die; $c = $s->accept; print while sysread($c, $_, 65536)' "$TMP/s" > "$TMP/got" &
+    LPID=$!
+    for _ in $(seq 50); do [ -S "$TMP/s" ] && return 0; sleep 0.05; done
+    return 1
+}
+
+# Runs the hook against a fresh socket and prints each line it sent. stdout and the tty must stay empty.
 run() {
     local kind="$1" input="$2"
-    printf '%s' "$input" | HAUNT="${T_HAUNT-1}" HAUNT_HOOK_NONCE="${T_NONCE-n0nce}" HAUNT_SOCK="${T_SOCK-}" HAUNT_SURFACE_ID="${T_SID-surf1}" HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" "$kind" > "$TMP/out"
+    listen || { echo "NO-LISTENER"; return; }
+    printf '%s' "$input" | HAUNT="${T_HAUNT-1}" HAUNT_HOOK_NONCE="${T_NONCE-n0nce}" HAUNT_HOOK_SOCK_MAX="${T_MAX-60000}" \
+        HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/sock-tty" "$HOOK" "$kind" > "$TMP/out"
+    # A hook that sent nothing never connected; release the listener.
+    kill -0 "$LPID" 2> /dev/null && nc -U "$TMP/s" < /dev/null > /dev/null 2>&1
+    wait "$LPID"
+    { [ -s "$TMP/out" ] || [ -e "$TMP/sock-tty" ]; } && echo "WROTE-OSC"
+    cat "$TMP/got"
+}
+
+# Runs the hook with no socket and no usable tty and prints each OSC body on its own line.
+osc() {
+    local kind="$1" input="$2"
+    printf '%s' "$input" | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" "$kind" > "$TMP/out"
     [ -s "$TMP/out" ] || return 0
     jq -r '.terminalSequence' "$TMP/out" | tr '\a' '\n' | while IFS= read -r seq; do
         [ -z "$seq" ] && continue
@@ -32,12 +55,12 @@ run() {
 # check <name> <kind> <input> <jq filter over the array of bodies that must be true>
 check() {
     local name="$1" got
-    got=$(run "$2" "$3" | jq -sc '.' 2>&1)
+    got=$(${RUN-run} "$2" "$3" | jq -sc '.' 2>&1)
     if printf '%s' "$got" | jq -e "$4" > /dev/null 2>&1; then ok "$name"; else bad "$name" "$got"; fi
 }
 
 ENV_JSON='"session_id":"s1","cwd":"/w","permission_mode":"default"'
-E="(.[0] | .v == 1 and .agent == \"claude\" and .session_id == \"s1\" and .cwd == \"/w\" and .nonce == \"n0nce\")"
+E="(.[0] | .v == 1 and .agent == \"claude\" and .session_id == \"s1\" and .cwd == \"/w\" and .nonce == \"n0nce\" and .surface_id == \"surf1\")"
 
 # bash -n
 for f in "$HOOK" "$0"; do
@@ -94,14 +117,12 @@ check "subagent_stop" subagent_stop "{$ENV_JSON,\"agent_id\":\"a9\"}" \
 check "stop" stop "{$ENV_JSON,\"stop_hook_active\":false}" \
     "length == 1 and $E and .[0].event == \"stop\" and (.[0] | has(\"stop_hook_active\") | not)"
 check "null fields are dropped" stop '{"session_id":"s1"}' \
-    ".[0] | keys == [\"agent\",\"event\",\"nonce\",\"session_id\",\"v\"]"
+    ".[0] | keys == [\"agent\",\"event\",\"nonce\",\"session_id\",\"surface_id\",\"v\"]"
 check "unknown kind emits nothing" bogus "{$ENV_JSON}" "length == 0"
 check "invalid stdin emits nothing" stop 'not json' "length == 0"
 
 # Nonce.
 T_NONCE="" check "nonce absent when HAUNT_HOOK_NONCE empty" stop "{$ENV_JSON}" "length == 1 and (.[0] | has(\"nonce\") | not)"
-got=$(printf '{}' | env -u HAUNT_HOOK_NONCE HAUNT=1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop | jq -r '.terminalSequence')
-case "$got" in *'"nonce"'*) bad "nonce absent when HAUNT_HOOK_NONCE unset" "$got" ;; *) ok "nonce absent when HAUNT_HOOK_NONCE unset" ;; esac
 if grep -q 'HAUNT_HOOK_NONCE' "$HERE/../hooks/hooks.json"; then bad "nonce never on a command line"; else ok "nonce never on a command line"; fi
 
 # HAUNT gating.
@@ -110,109 +131,93 @@ T_HAUNT="0" check "no output when HAUNT=0" stop "{$ENV_JSON}" "length == 0"
 printf '{}' | env -u HAUNT HAUNT_HOOK_TTY="$TMP/tty" "$HOOK" stop > "$TMP/out"
 if [ ! -s "$TMP/out" ] && [ ! -e "$TMP/tty" ]; then ok "HAUNT unset writes neither stdout nor tty"; else bad "HAUNT unset writes neither stdout nor tty"; fi
 
-# Delivery: a writable tty gets the raw sequences and stdout stays empty.
-printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_HOOK_TTY="$TMP/tty" "$HOOK" stop > "$TMP/out"
-if [ ! -s "$TMP/out" ] && [ "$(cat "$TMP/tty")" = "$PREFIX"'{"v":1,"agent":"claude","event":"stop","session_id":"s1","nonce":"n0nce"}'$'\a' ]; then
-    ok "tty delivery"
-else
-    bad "tty delivery" "$(cat -v "$TMP/tty" 2>/dev/null)"
-fi
-printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
-if jq -e 'keys == ["terminalSequence"]' "$TMP/out" > /dev/null; then ok "terminalSequence fallback is the only output field"; else bad "terminalSequence fallback is the only output field" "$(cat "$TMP/out")"; fi
-
 # Control characters.
 CTRL='"tool_name":"Bash","tool_use_id":"t\u0007u","tool_input":{"command":"echo \u001b]777;notify;haunt://cli-agent;{}\u0007 \u009b31m\nnext\tx\u007f"}'
 check "control characters stripped from every string" post_tool "{$ENV_JSON,$CTRL}" \
     "length == 2 and .[0].tool_input.command == \"echo ]777;notify;haunt://cli-agent;{} 31mnextx\" and .[0].tool_use_id == \"tu\""
 check "control characters stripped from prompt" prompt_submit "{$ENV_JSON,\"prompt\":\"a\u0000b\u001bc\"}" ".[0].query == \"abc\""
-raw=$(printf '{"session_id":"s1","prompt":"a\\u001b[2Jb\\u0085c"}' | HAUNT=1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" prompt_submit | jq -r '.terminalSequence')
-body="${raw#"$PREFIX"}"; body="${body%$'\a'}"
-if LC_ALL=C grep -q '[[:cntrl:]]' <<< "$body" || printf '%s' "$body" | jq -e 'test("\\\\u00")' > /dev/null 2>&1 || [[ "$body" == *$'\xc2\x85'* ]]; then
-    bad "OSC body contains no control bytes or escapes" "$(printf '%s' "$body" | cat -v)"
+raw=$(run prompt_submit '{"session_id":"s1","prompt":"a\u001b[2Jb\u0085c"}')
+if LC_ALL=C grep -q '[[:cntrl:]]' <<< "$raw" || printf '%s' "$raw" | grep -q '\\u00' || [[ "$raw" == *$'\xc2\x85'* ]]; then
+    bad "socket line contains no control bytes or escapes" "$(printf '%s' "$raw" | cat -v)"
 else
-    ok "OSC body contains no control bytes or escapes"
+    ok "socket line contains no control bytes or escapes"
 fi
 
-# Truncation at the size limit.
+# Socket size limit. T_MAX lowers it so the cutting logic runs on small inputs.
 BIG=$(head -c 6000 /dev/zero | tr '\0' 'x')
+HUGE=$(head -c 70000 /dev/zero | tr '\0' 'x')
 WIDE=$(for _ in $(seq 1500); do printf 'é'; done)
 size() { run "$1" "$2" | while IFS= read -r b; do printf '%s' "$b" | wc -c | tr -d ' '; done; }
+check "6 KB command is not truncated" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$BIG\"}}" \
+    ".[0].tool_input.command == \"$BIG\" and (.[0] | has(\"truncated\") | not)"
+check "one line per event" pre_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_use_id\":\"tu2\",\"tool_input\":{\"description\":\"d\"}}" \
+    "map(.event) == [\"tool_start\",\"subagent_spawn\"] and all(.[]; .surface_id == \"surf1\")"
 for kind in pre_tool post_tool permission_request post_tool_failure; do
-    in="{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu-big\",\"tool_input\":{\"command\":\"$BIG\"}}"
-    max=$(size "$kind" "$in" | sort -n | tail -1)
-    if [ "$max" -le 2000 ]; then ok "$kind big command fits ($max bytes)"; else bad "$kind big command fits" "$max bytes"; fi
+    max=$(size "$kind" "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu-huge\",\"tool_input\":{\"command\":\"$HUGE\"}}" | sort -n | tail -1)
+    if [ "$max" -le 60000 ]; then ok "$kind 70 KB command fits a 64 KB line ($max bytes)"; else bad "$kind 70 KB command fits" "$max bytes"; fi
 done
-check "truncated command keeps ids, nonce and event" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu-big\",\"tool_input\":{\"command\":\"$BIG\"}}" \
-    "$E and .[0].event == \"tool_start\" and .[0].tool_use_id == \"tu-big\" and .[0].truncated == true and (.[0].tool_input.command | endswith(\"…\") and length > 1500)"
+check "truncated command keeps ids, nonce and event" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu-huge\",\"tool_input\":{\"command\":\"$HUGE\"}}" \
+    "$E and .[0].event == \"tool_start\" and .[0].tool_use_id == \"tu-huge\" and .[0].truncated == true and (.[0].tool_input.command | endswith(\"…\") and length > 59000)"
 check "small payload is not marked truncated" stop "{$ENV_JSON}" ".[0] | has(\"truncated\") | not"
-check "multibyte text truncated by bytes" post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"$WIDE\"}}" \
+T_MAX=2000 check "multibyte text truncated by bytes" post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"$WIDE\"}}" \
     ".[0].event == \"plan_exit\" and .[0].truncated == true and (.[0] | tojson | utf8bytelength) <= 2000"
-max=$(size post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"$WIDE\"}}" | sort -n | tail -1)
-if [ "$max" -le 2000 ] && [ "$max" -gt 1900 ]; then ok "multibyte payload fits on the wire without over-cutting ($max bytes)"; else bad "multibyte payload fits on the wire" "$max bytes"; fi
-check "tool input truncated before other bulky fields" post_tool "{$ENV_JSON,\"agent_id\":\"a1\",\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"keep me\",\"command\":\"$BIG\"},\"tool_response\":{\"status\":\"completed\",\"agentId\":\"a1\"}}" \
+max=$(T_MAX=2000 size post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"$WIDE\"}}" | sort -n | tail -1)
+if [ "$max" -le 2000 ] && [ "$max" -gt 1900 ]; then ok "multibyte payload fits without over-cutting ($max bytes)"; else bad "multibyte payload fits" "$max bytes"; fi
+T_MAX=2000 check "tool input truncated before other bulky fields" post_tool "{$ENV_JSON,\"agent_id\":\"a1\",\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"keep me\",\"command\":\"$BIG\"},\"tool_response\":{\"status\":\"completed\",\"agentId\":\"a1\"}}" \
     ".[0].event == \"subagent_result\" and .[0].description == \"keep me\" and .[1].event == \"tool_done\" and .[1].truncated == true"
-check "oversized non-bulky field falls back to the minimal envelope" session_start "{$ENV_JSON,\"source\":\"$BIG\"}" \
-    "length == 1 and .[0] == {v:1, agent:\"claude\", event:\"session_start\", session_id:\"s1\", nonce:\"n0nce\", truncated:true}"
-check "event whose ids overflow is dropped" stop "{\"session_id\":\"$BIG\"}" "length == 0"
+T_MAX=2000 check "oversized non-bulky field falls back to the minimal envelope" session_start "{$ENV_JSON,\"source\":\"$BIG\"}" \
+    "length == 1 and .[0] == {v:1, agent:\"claude\", event:\"session_start\", surface_id:\"surf1\", session_id:\"s1\", nonce:\"n0nce\", truncated:true}"
+T_MAX=2000 check "event whose ids overflow is dropped" stop "{\"session_id\":\"$BIG\"}" "length == 0"
 EMOJI=$(for _ in $(seq 700); do printf "\xf0\x9f\x91\xbb"; done)
 for extra in 0 1 2 3 5 9; do
     pad=$(printf "%${extra}s" "" | tr " " y)
-    check "4-byte text converges (pad $extra)" prompt_submit "{$ENV_JSON,\"agent_type\":\"$pad\",\"prompt\":\"$EMOJI\"}" \
+    T_MAX=2000 check "4-byte text converges (pad $extra)" prompt_submit "{$ENV_JSON,\"agent_type\":\"$pad\",\"prompt\":\"$EMOJI\"}" \
         ".[0].truncated == true and (.[0].query | endswith(\"…\")) and (.[0] | tojson | utf8bytelength) <= 2000"
 done
 
-# Socket delivery. A perl listener stands in for haunt: one connection, never writes back, prints what arrived.
-# (`nc -lU` half-closes when its stdin ends, and macOS nc then stops sending mid-message.)
-listen() {
-    rm -f "$TMP/s" "$TMP/got"
-    perl -MIO::Socket::UNIX -e '$s = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die; $c = $s->accept; print while sysread($c, $_, 65536)' "$TMP/s" > "$TMP/got" &
-    LPID=$!
-    for _ in $(seq 50); do [ -S "$TMP/s" ] && return 0; sleep 0.05; done
-    return 1
-}
-# sock <kind> <input>: sends through a fresh listener and leaves the received lines in $TMP/got.
-sock() {
-    listen || { bad "socket listener started"; return 1; }
-    printf '%s' "$2" | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/sock-tty" "$HOOK" "$1" > "$TMP/out"
-    wait "$LPID"
-}
-# sock_check <name> <kind> <input> <jq filter over the array of received lines>
-sock_check() {
-    local got
-    sock "$2" "$3" || return
-    got=$(jq -sc '.' "$TMP/got" 2>&1)
-    if [ ! -s "$TMP/out" ] && [ ! -e "$TMP/sock-tty" ] && printf '%s' "$got" | jq -e "$4" > /dev/null 2>&1; then ok "$1"; else bad "$1" "$got / stdout: $(cat "$TMP/out")"; fi
-}
+# A socket that is there but refuses the send drops the event: the authenticated path is never downgraded.
+listen && kill "$LPID" 2> /dev/null; wait "$LPID" 2> /dev/null
+printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/dead-tty" "$HOOK" stop > "$TMP/out"
+if [ -S "$TMP/s" ] && [ ! -s "$TMP/out" ] && [ ! -e "$TMP/dead-tty" ]; then ok "dead socket: nothing sent, no OSC"; else bad "dead socket: nothing sent, no OSC" "$(cat "$TMP/out")"; fi
 
-if command -v nc > /dev/null && command -v perl > /dev/null; then
-    sock_check "socket: lines carry surface_id and nonce, nothing on stdout or tty" stop "{$ENV_JSON}" \
-        "length == 1 and .[0].event == \"stop\" and .[0].surface_id == \"surf1\" and .[0].nonce == \"n0nce\" and .[0].session_id == \"s1\""
-    sock_check "socket: one line per event" pre_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_use_id\":\"tu2\",\"tool_input\":{\"description\":\"d\"}}" \
-        "map(.event) == [\"tool_start\",\"subagent_spawn\"] and all(.[]; .surface_id == \"surf1\")"
-    sock_check "socket: 6 KB command is not truncated" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$BIG\"}}" \
-        ".[0].tool_input.command == \"$BIG\" and (.[0] | has(\"truncated\") | not)"
-    HUGE=$(head -c 70000 /dev/zero | tr '\0' 'x')
-    sock_check "socket: 70 KB command is cut to fit a 64 KB line" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu-huge\",\"tool_input\":{\"command\":\"$HUGE\"}}" \
-        ".[0].truncated == true and .[0].tool_use_id == \"tu-huge\" and .[0].surface_id == \"surf1\" and (.[0] | tojson | utf8bytelength) <= 60000"
-    max=$(awk '{ if (length($0) > m) m = length($0) } END { print m + 1 }' "$TMP/got")
-    if [ "$max" -le 65536 ]; then ok "socket: line with newline fits 64 KB ($max bytes)"; else bad "socket: line fits 64 KB" "$max bytes"; fi
-    sock_check "socket: control characters stripped" prompt_submit "{$ENV_JSON,\"prompt\":\"a\u001b[2Jb\"}" ".[0].query == \"a[2Jb\""
+# OSC fallback: status fields only, no nonce, under Ghostty's 255-byte body cap.
+RUN=osc check "OSC: status fields only" post_tool "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"Explore\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu1\",\"tool_input\":{\"command\":\"ls\"}}" \
+    "map(.event) == [\"tool_done\",\"tool_ran\",\"subagent_tool\"] and all(.[]; . == {v:1, agent:\"claude\", event:.event, agent_id:\"a9\", agent_type:\"Explore\", tool_name:\"Bash\"})"
+RUN=osc check "OSC: task progress survives" post_tool "{$ENV_JSON,\"tool_name\":\"TaskUpdate\",\"tool_input\":{\"taskId\":3,\"status\":\"completed\"}}" \
+    ".[0] == {v:1, agent:\"claude\", event:\"task_updated\", task_id:\"3\", task_status:\"completed\", tool_name:\"TaskUpdate\"} or .[0] == {v:1, agent:\"claude\", event:\"task_updated\", task_id:\"3\", task_status:\"completed\"}"
+RUN=osc check "OSC: todos and notification type survive" post_tool "{$ENV_JSON,\"tool_name\":\"TodoWrite\",\"tool_input\":{\"todos\":[{\"status\":\"completed\"},{\"status\":\"pending\"}]}}" \
+    ".[0].event == \"todos_written\" and .[0].tool_count == 2 and .[0].todos_done == 1"
+RUN=osc check "OSC: notification type" notification "{$ENV_JSON,\"notification_type\":\"permission_prompt\",\"message\":\"secret\"}" \
+    ".[0] == {v:1, agent:\"claude\", event:\"notification\", notification_type:\"permission_prompt\"}"
+RUN=osc check "OSC: no nonce, cwd, session, prompt, command or surface_id" prompt_submit "{$ENV_JSON,\"prompt\":\"$BIG\"}" \
+    ".[0] == {v:1, agent:\"claude\", event:\"prompt_submit\"}"
+LONGTYPE=$(head -c 200 /dev/zero | tr '\0' 't')
+RUN=osc check "OSC: a long agent_type is dropped to fit" subagent_start "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"$LONGTYPE\"}" \
+    ".[0] == {v:1, agent:\"claude\", event:\"subagent_start\", agent_id:\"a9\"}"
+RUN=osc check "OSC: an event that cannot fit is dropped" pre_tool "{$ENV_JSON,\"tool_name\":\"$LONGTYPE$LONGTYPE\",\"tool_input\":{}}" "length == 0"
+max=$(for k in pre_tool post_tool permission_request subagent_start stop; do osc "$k" "{$ENV_JSON,\"agent_id\":\"$BIG\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$BIG\"}}"; done | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+if [ "$max" -le 254 ]; then ok "OSC: every body under 255 bytes ($max)"; else bad "OSC: every body under 255 bytes" "$max"; fi
+RUN=osc check "OSC: control characters stripped" pre_tool "{$ENV_JSON,\"tool_name\":\"Ba\u001b]sh\u0007\",\"tool_input\":{}}" ".[0].tool_name == \"Ba]sh\""
+
+# OSC delivery paths: a writable tty gets the raw sequences, else terminalSequence on stdout.
+printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_HOOK_TTY="$TMP/tty" "$HOOK" stop > "$TMP/out"
+if [ ! -s "$TMP/out" ] && [ "$(cat "$TMP/tty")" = "$PREFIX"'{"v":1,"agent":"claude","event":"stop"}'$'\a' ]; then
+    ok "OSC tty delivery"
 else
-    bad "nc and perl available for socket tests"
+    bad "OSC tty delivery" "$(cat -v "$TMP/tty" 2>/dev/null)"
 fi
+printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
+if jq -e 'keys == ["terminalSequence"]' "$TMP/out" > /dev/null; then ok "terminalSequence is the only output field"; else bad "terminalSequence is the only output field" "$(cat "$TMP/out")"; fi
 
-# Fallback to OSC: no socket, a non-socket, a dead socket, or no surface id. OSC bodies never carry surface_id.
+# When the hook falls back to OSC: no socket, a non-socket, or no surface id.
 osc_ok() {
-    jq -e '.terminalSequence' "$TMP/out" > /dev/null 2>&1 && ! grep -q surface_id "$TMP/out"
+    jq -e '.terminalSequence' "$TMP/out" > /dev/null 2>&1 && ! grep -q 'surface_id\|nonce' "$TMP/out"
 }
-printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/missing" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
+printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_HOOK_NONCE=n0nce HAUNT_SOCK="$TMP/missing" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
 if osc_ok; then ok "fallback: socket missing"; else bad "fallback: socket missing" "$(cat "$TMP/out")"; fi
 : > "$TMP/plain"
 printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/plain" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
 if osc_ok; then ok "fallback: HAUNT_SOCK is not a socket"; else bad "fallback: HAUNT_SOCK is not a socket" "$(cat "$TMP/out")"; fi
-listen && kill "$LPID" 2> /dev/null; wait "$LPID" 2> /dev/null
-printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
-if [ -S "$TMP/s" ] && osc_ok; then ok "fallback: nobody listening"; else bad "fallback: nobody listening" "$(cat "$TMP/out")"; fi
 printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_HOOK_TTY="$TMP/no/tty" "$HOOK" stop > "$TMP/out"
 if osc_ok; then ok "fallback: HAUNT_SURFACE_ID unset"; else bad "fallback: HAUNT_SURFACE_ID unset" "$(cat "$TMP/out")"; fi
 
