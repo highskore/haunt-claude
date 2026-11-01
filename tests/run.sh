@@ -255,5 +255,20 @@ if osc_ok; then ok "fallback: HAUNT_SURFACE_ID unset"; else bad "fallback: HAUNT
 check "every event carries v=1 and a string event" post_tool "{$ENV_JSON,\"agent_id\":\"a\",\"tool_name\":\"TodoWrite\",\"tool_input\":{\"todos\":[]}}" \
     "all(.[]; .v == 1 and (.event | type) == \"string\")"
 
+# install.sh --dry-run prints the claude commands and runs none of them.
+INSTALL="$HERE/../install.sh"
+REPO="$(cd "$HERE/.." && pwd)"
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\ntouch "%s/claude-ran"\n' "$TMP" > "$TMP/bin/claude"
+chmod +x "$TMP/bin/claude"
+want="$(printf 'claude plugin marketplace add %q\nclaude plugin install haunt@haunt' "$REPO")"
+got="$(PATH="$TMP/bin:$PATH" "$INSTALL" --dry-run)"
+if [ "$got" = "$want" ]; then ok "install --dry-run prints the install commands"; else bad "install --dry-run prints the install commands" "$got"; fi
+got="$(PATH="$TMP/bin:$PATH" "$INSTALL" --remove --dry-run)"
+if [ "$got" = $'claude plugin uninstall haunt@haunt\nclaude plugin marketplace remove haunt' ]; then ok "install --remove --dry-run prints the remove commands"; else bad "install --remove --dry-run prints the remove commands" "$got"; fi
+if [ ! -e "$TMP/claude-ran" ]; then ok "install --dry-run runs nothing"; else bad "install --dry-run runs nothing"; fi
+if PATH="$TMP/bin:$PATH" "$INSTALL" > /dev/null 2>&1; then bad "install with no mode is a usage error"; else ok "install with no mode is a usage error"; fi
+if bash -n "$INSTALL"; then ok "install.sh: bash -n"; else bad "install.sh: bash -n"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

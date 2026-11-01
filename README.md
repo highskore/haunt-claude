@@ -15,6 +15,8 @@ claude plugin marketplace add /path/to/haunt-claude
 claude plugin install haunt@haunt
 ```
 
+`install.sh` wraps those two commands: `--apply` runs them, `--remove` runs `claude plugin uninstall haunt@haunt` and `claude plugin marketplace remove haunt`, and `--dry-run` (alone, or with `--remove`) only prints them. `haunt setup claude` uses it.
+
 After editing the script, run `claude plugin update haunt@haunt`. To load the plugin without installing it, start Claude Code with `claude --plugin-dir /path/to/haunt-claude`.
 
 Requirements: `bash` and `jq` 1.6 or newer on `PATH`. The socket path also needs `nc` with `-U` (macOS ships one). OSC delivery without a tty needs Claude Code 2.1.141 or newer.
@@ -29,7 +31,7 @@ Haunt sets `HAUNT=1`, `HAUNT_SOCK`, `HAUNT_SURFACE_ID` and `HAUNT_HOOK_NONCE` in
 tests/run.sh
 ```
 
-These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, and `bash -n`.
+These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, `bash -n`, and `install.sh --dry-run`.
 
 ## Environment
 
