@@ -1,0 +1,6 @@
+{
+  "name": "haunt",
+  "description": "Reports Claude Code session, task, subagent, tool and permission events to the haunt terminal",
+  "version": "0.1.0",
+  "author": { "name": "Luka Racki" }
+}

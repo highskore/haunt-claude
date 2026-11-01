@@ -1,0 +1,11 @@
+{
+  "name": "haunt",
+  "owner": { "name": "Luka Racki" },
+  "plugins": [
+    {
+      "name": "haunt",
+      "source": "./",
+      "description": "Reports Claude Code agent events to the haunt terminal"
+    }
+  ]
+}
