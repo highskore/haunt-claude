@@ -1,27 +1,35 @@
-# haunt Claude Code plugin
+# haunt-claude
 
-Reports Claude Code session, task, subagent, tool and permission events to the haunt terminal. Events go over haunt's Unix socket when there is one, and as OSC 777 notifications otherwise. haunt-core parses both (`core/src/event.rs`).
+The Claude Code adapter for [Haunt](../../haunt), a macOS terminal for managing coding agents. It is a Claude Code plugin whose hooks report session, task, subagent, tool and permission events to Haunt. Events go over Haunt's Unix socket as NDJSON when there is one, and as OSC 777 notifications otherwise. haunt-core parses both (`core/src/event.rs` in the haunt repo).
+
+Each agent Haunt supports has its own adapter repo; they all emit the same agent-neutral event format. See [SPEC.md](SPEC.md).
+
+This repo was split out of the haunt repo's `hooks/` folder with `git subtree split`, so its history starts there (haunt commit `f593132`).
 
 ## Install
 
-From a checkout of this repo:
+The repo root is both the marketplace (`.claude-plugin/marketplace.json`) and the plugin (`.claude-plugin/plugin.json`, `hooks/hooks.json`, `scripts/haunt-hook.sh`). From a checkout:
 
 ```sh
-claude plugin marketplace add ./hooks
+claude plugin marketplace add /path/to/haunt-claude
 claude plugin install haunt@haunt
 ```
 
-`hooks/` is both the marketplace (`.claude-plugin/marketplace.json`) and the plugin (`.claude-plugin/plugin.json`, `hooks/hooks.json`). After editing the script, run `claude plugin update haunt@haunt`, or start Claude Code with `claude --plugin-dir ./hooks` to load the plugin without installing it.
+After editing the script, run `claude plugin update haunt@haunt`. To load the plugin without installing it, start Claude Code with `claude --plugin-dir /path/to/haunt-claude`.
 
 Requirements: `bash` and `jq` 1.6 or newer on `PATH`. The socket path also needs `nc` with `-U` (macOS ships one). OSC delivery without a tty needs Claude Code 2.1.141 or newer.
+
+## How it pairs with Haunt
+
+Haunt sets `HAUNT=1`, `HAUNT_SOCK`, `HAUNT_SURFACE_ID` and `HAUNT_HOOK_NONCE` in every terminal surface it opens (see Environment below). Claude Code started in one of those surfaces runs the hooks, which send each event to Haunt's socket, tagged with the surface and nonce so Haunt can attribute and verify it. Outside Haunt, `HAUNT` is unset and the hooks do nothing. Haunt's app bundle may ship a copy of this adapter; the haunt repo's end-to-end test (`cargo test -p haunt-core --test hook_e2e`) runs this script against the real core socket.
 
 ## Tests
 
 ```sh
-hooks/tests/run.sh
+tests/run.sh
 ```
 
-These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, and `bash -n`. `cargo test -p haunt-core --test hook_e2e` runs the script against the real core socket.
+These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, and `bash -n`.
 
 ## Environment
 
@@ -36,7 +44,7 @@ These are plain bash plus jq, `nc` and a perl listener that stands in for the so
 
 ## Delivery
 
-**Socket (primary).** If `HAUNT_SOCK` is a socket, `HAUNT_SURFACE_ID` is set and `nc` exists, the hook writes one JSON line per event to `nc -U -w 2 "$HAUNT_SOCK"` and stops there. Only socket events whose `nonce` matches count as verified in the core (`docs/core-api.md`).
+**Socket (primary).** If `HAUNT_SOCK` is a socket, `HAUNT_SURFACE_ID` is set and `nc` exists, the hook writes one JSON line per event to `nc -U -w 2 "$HAUNT_SOCK"` and stops there. Only socket events whose `nonce` matches count as verified in the core (`docs/core-api.md` in the haunt repo).
 
 If the socket is there but the send fails (haunt died and left the socket file), the event is dropped. It is never downgraded to OSC.
 
@@ -103,7 +111,7 @@ A PostToolUse fires its events in table order: the tool-specific event, then `to
 
 ### Parsing in haunt-core
 
-`core/src/event.rs` parses every event above. The tool events share one `ToolCall { tool_name, tool_use_id, command, url, file_path }`: `ToolStart`, `ToolDone`, `ToolFailed`, `ToolRan` and `PermissionSeen` (which has no `tool_use_id`, because Claude Code's PermissionRequest input has none). `Notification { notification_type, message }` and `TodosWritten { count, done }` cover the rest. `tool_input` is always present, but may be `{}`.
+`core/src/event.rs` in the haunt repo parses every event above. The tool events share one `ToolCall { tool_name, tool_use_id, command, url, file_path }`: `ToolStart`, `ToolDone`, `ToolFailed`, `ToolRan` and `PermissionSeen` (which has no `tool_use_id`, because Claude Code's PermissionRequest input has none). `Notification { notification_type, message }` and `TodosWritten { count, done }` cover the rest. `tool_input` is always present, but may be `{}`.
 
 Example socket lines (`HAUNT_HOOK_NONCE=3f9c`, without the `surface_id` every line also carries):
 

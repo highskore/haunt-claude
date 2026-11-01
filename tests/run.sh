@@ -1,5 +1,5 @@
 #!/bin/bash
-# Plain-bash tests for scripts/haunt-hook.sh. Needs jq, nc and perl. Usage: hooks/tests/run.sh
+# Plain-bash tests for scripts/haunt-hook.sh. Needs jq, nc and perl. Usage: tests/run.sh
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
