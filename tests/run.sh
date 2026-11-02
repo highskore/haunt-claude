@@ -78,6 +78,8 @@ check "pre_tool -> tool_start" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"too
     "length == 1 and $E and .[0].event == \"tool_start\" and .[0].tool_name == \"Bash\" and .[0].tool_use_id == \"tu1\" and .[0].tool_input == {command:\"ls\"}"
 check "pre_tool Agent -> tool_start + subagent_spawn" pre_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_use_id\":\"tu2\",\"tool_input\":{\"description\":\"find it\",\"prompt\":\"...\"}}" \
     "length == 2 and $E and (map(.event) == [\"tool_start\",\"subagent_spawn\"]) and .[1].agent_type == \"general-purpose\" and .[1].description == \"find it\""
+check "pre_tool non-string preview fields are dropped" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu4\",\"tool_input\":{\"command\":[\"npm\",\"test\"],\"url\":{\"bad\":\"obj\"},\"file_path\":123}}" \
+    "length == 1 and $E and .[0].event == \"tool_start\" and .[0].tool_input == {}"
 check "post_tool Bash -> tool_done + tool_ran" post_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu1\",\"tool_input\":{\"command\":\"ls\"},\"tool_response\":{}}" \
     "length == 2 and $E and map(.event) == [\"tool_done\",\"tool_ran\"] and all(.[]; .tool_input == {command:\"ls\"} and .tool_use_id == \"tu1\")"
 check "post_tool WebFetch keeps url in tool_done only" post_tool "{$ENV_JSON,\"tool_name\":\"WebFetch\",\"tool_input\":{\"url\":\"https://x\",\"prompt\":\"p\"}}" \
@@ -86,6 +88,8 @@ check "post_tool TaskUpdate -> task_updated" post_tool "{$ENV_JSON,\"tool_name\"
     "$E and .[0].event == \"task_updated\" and .[0].task_id == \"3\" and .[0].task_status == \"completed\""
 check "post_tool TaskUpdate without status skips task_updated" post_tool "{$ENV_JSON,\"tool_name\":\"TaskUpdate\",\"tool_input\":{\"taskId\":3}}" \
     "map(.event) == [\"tool_done\",\"tool_ran\"]"
+check "post_tool TaskUpdate without taskId omits task_id" post_tool "{$ENV_JSON,\"tool_name\":\"TaskUpdate\",\"tool_input\":{\"status\":\"in_progress\"}}" \
+    "$E and .[0].event == \"task_updated\" and .[0].task_status == \"in_progress\" and (.[0] | has(\"task_id\") | not)"
 check "post_tool Agent completed -> subagent_result" post_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_input\":{\"description\":\"d\"},\"tool_response\":{\"status\":\"completed\",\"agentId\":\"a9\",\"agentType\":\"Explore\",\"totalToolUseCount\":4,\"totalDurationMs\":1200}}" \
     "$E and .[0].event == \"subagent_result\" and .[0].agent_id == \"a9\" and .[0].agent_type == \"Explore\" and .[0].tool_count == 4 and .[0].duration_ms == 1200 and .[0].description == \"d\""
 check "post_tool Agent background launch skips subagent_result" post_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_input\":{},\"tool_response\":{\"status\":\"async_launched\"}}" \
