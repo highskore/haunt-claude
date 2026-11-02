@@ -172,6 +172,26 @@ else
     ok "socket line contains no control bytes or escapes"
 fi
 
+# C1 controls (U+0080-009F) in tool_input reach the socket as \u escapes: jq leaves them raw, and
+# the core drops any line holding a raw control character.
+c1_input() { printf '%s' "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$1\"}}"; }
+raw=$(run permission_request "$(c1_input 'a\u0085b\u009b31mc\u0080')")
+if [ -n "$raw" ] && ! printf '%s' "$raw" | LC_ALL=C perl -ne 'exit 1 if /\xc2[\x80-\x9f]|[\x00-\x1f\x7f]/' ; then
+    bad "C1 controls leave no raw control bytes" "$(printf '%s' "$raw" | od -c | head -5)"
+elif [[ "$raw" == *'\u0085b\u009b31mc\u0080'* ]] && [ "$(printf '%s' "$raw" | jq -r '.tool_input.command')" = $'a\xc2\x85b\xc2\x9b31mc\xc2\x80' ]; then
+    ok "C1 controls leave no raw control bytes and decode to the same command"
+else
+    bad "C1 controls leave no raw control bytes and decode to the same command" "$raw"
+fi
+C1S=$(for _ in $(seq 800); do printf '\\u0085'; done)
+raw=$(T_MAX=2000 run permission_request "$(c1_input "$C1S")")
+n=$(printf '%s' "$raw" | wc -c | tr -d ' ')
+if [ "$n" -le 2000 ] && [ "$n" -gt 1800 ] && [ "$(printf '%s' "$raw" | jq -r '.truncated')" = true ]; then
+    ok "escaped C1 counts toward the line limit ($n bytes)"
+else
+    bad "escaped C1 counts toward the line limit" "$n bytes"
+fi
+
 # Socket size limit. T_MAX lowers it so the cutting logic runs on small inputs.
 BIG=$(head -c 6000 /dev/zero | tr '\0' 'x')
 HUGE=$(head -c 70000 /dev/zero | tr '\0' 'x')

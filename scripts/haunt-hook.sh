@@ -36,12 +36,16 @@ def isfmt: . == 173 or (. >= 1536 and . <= 1541) or . == 1564 or . == 1757 or . 
   or . == 65279 or (. >= 65529 and . <= 65531) or . == 69821 or . == 69837 or (. >= 78896 and . <= 78911)
   or (. >= 113824 and . <= 113827) or (. >= 119155 and . <= 119162) or . == 917505 or (. >= 917536 and . <= 917631);
 def clean: if type == "string" then explode | map(select(. >= 32 and (. < 127 or . > 159) and (isfmt | not))) | implode else . end;
-def bytes: tojson | utf8bytelength;
+# jq leaves C1 controls (U+0080-009F) raw, and the core drops any line holding a raw control
+# character, so they go out as \u escapes.
+def hex2: [(. / 16 | floor), . % 16] | map("0123456789abcdef"[.:.+1]) | add;
+def json: tojson | if test("[\u0080-\u009f]") then [explode[] | if . >= 128 and . <= 159 then "\\u00" + hex2 | explode[] else . end] | implode else . end;
+def bytes: json | utf8bytelength;
 def shrink($p):
   if bytes <= $max then .
   else (getpath($p) | if type == "string" then rtrimstr("…") else . end) as $s
   | if ($s | type) != "string" or ($s | length) == 0 then .
-    else ($s | tojson | utf8bytelength) as $sb
+    else ($s | json | utf8bytelength) as $sb
     | ([($s | length) - ((bytes - $max + 3) * ($s | length) / $sb | ceil), 0] | max) as $keep
     | setpath($p; $s[:$keep] + "…") | .truncated = true
     | if $keep == 0 then . else shrink($p) end
@@ -119,8 +123,8 @@ VERSION=""
 
 # bodies <max bytes> <true for the socket>
 bodies() {
-    printf '%s' "$INPUT" | jq -c --argjson max "$1" --argjson sock "$2" --arg version "$VERSION" \
-        "$LIB ($EXPR) | if \$sock then finalize | if .plugin_version == \"\" then del(.plugin_version) else . end else status end" 2>/dev/null
+    printf '%s' "$INPUT" | jq -r --argjson max "$1" --argjson sock "$2" --arg version "$VERSION" \
+        "$LIB ($EXPR) | if \$sock then finalize | if .plugin_version == \"\" then del(.plugin_version) else . end else status end | json" 2>/dev/null
 }
 
 # The socket is the authenticated path. If it is there, a failed send (no nc included) is dropped rather than downgraded to OSC.
