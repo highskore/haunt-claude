@@ -31,7 +31,7 @@ Haunt sets `HAUNT=1`, `HAUNT_SOCK`, `HAUNT_SURFACE_ID` and `HAUNT_HOOK_NONCE` in
 tests/run.sh
 ```
 
-These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, `bash -n`, and `install.sh --dry-run`.
+These are plain bash plus jq, `nc` and a perl listener that stands in for the socket. They cover every event's shape over the socket, the nonce, HAUNT gating, control-character stripping, what each tool's permission prompt sends, truncation, a dead socket, the status-only OSC body and its 255-byte cap, both OSC delivery paths, each fallback to OSC, no `nc`, `bash -n`, and `install.sh --dry-run`.
 
 ## Environment
 
@@ -46,11 +46,11 @@ These are plain bash plus jq, `nc` and a perl listener that stands in for the so
 
 ## Delivery
 
-**Socket (primary).** If `HAUNT_SOCK` is a socket, `HAUNT_SURFACE_ID` is set and `nc` exists, the hook writes one JSON line per event to `nc -U -w 2 "$HAUNT_SOCK"` and stops there. Only socket events whose `nonce` matches count as verified in the core (`docs/core-api.md` in the haunt repo).
+**Socket (primary).** If `HAUNT_SOCK` is a socket and `HAUNT_SURFACE_ID` is set, the hook writes one JSON line per event to `nc -U -w 2 "$HAUNT_SOCK"` and stops there; without `nc` it drops the event. Only socket events whose `nonce` matches count as verified in the core (`docs/core-api.md` in the haunt repo).
 
 If the socket is there but the send fails (haunt died and left the socket file), the event is dropped. It is never downgraded to OSC.
 
-**OSC 777 (fallback).** The hook falls back to OSC only when the socket isn't there: `HAUNT_SOCK` is unset, missing or not a socket, `HAUNT_SURFACE_ID` is unset, or `nc` is missing. Each event is one sequence: `ESC ] 777 ; notify ; haunt://cli-agent ; <json> BEL`. A hook that fires several events concatenates them. Any program in the pty can print these sequences, so the core treats OSC events as status-only. The body therefore carries only what moves status and progress, plus a title: `{v, agent, event, agent_id, agent_type, task_id, task_status, task_subject, description, tool_name, tool_count, todos_done, notification_type}`, with absent fields omitted. `task_subject` and `description` are cut to fit, ending with `…` and setting `truncated`. It never carries the nonce, the cwd, the session id, prompts, commands or messages. Ghostty also delivers at most one notification per second and only the first sequence of a burst, so the fallback is coarse by nature.
+**OSC 777 (fallback).** The hook falls back to OSC only when the socket isn't there: `HAUNT_SOCK` is unset, missing or not a socket, `HAUNT_SURFACE_ID` is unset. A missing `nc` is never a reason to. Each event is one sequence: `ESC ] 777 ; notify ; haunt://cli-agent ; <json> BEL`. A hook that fires several events concatenates them. Any program in the pty can print these sequences, so the core treats OSC events as status-only. The body therefore carries only what moves status and progress, plus a title: `{v, agent, event, agent_id, agent_type, task_id, task_status, task_subject, description, tool_name, tool_count, todos_done, notification_type}`, with absent fields omitted. `task_subject` and `description` are cut to fit, ending with `…` and setting `truncated`. It never carries the nonce, the cwd, the session id, prompts, commands or messages. Ghostty also delivers at most one notification per second and only the first sequence of a burst, so the fallback is coarse by nature.
 
 1. The hook first tries to write the sequences to `/dev/tty`. That works on older Claude Code, which rejects unknown output fields but still gives hooks a terminal.
 2. If `/dev/tty` cannot be opened, the hook prints `{"terminalSequence":"<sequences>"}` and Claude Code writes the sequences itself. That is the path from Claude Code 2.1.141 on, where hooks have no controlling terminal.
@@ -100,10 +100,10 @@ Every string except those in `tool_input` is stripped of C0 controls (U+0000 to 
 | `todos_written` | PostToolUse (TodoWrite) | `tool_count` (todos), `todos_done` (completed) |
 | `file_edited` | PostToolUse (Edit/Write/MultiEdit/NotebookEdit) | `tool_name`, `tool_input.file_path` |
 | `tool_done` | PostToolUse | `tool_name`, `tool_use_id`, `tool_input` |
-| `tool_ran` | PostToolUse | `tool_name`, `tool_use_id`, `tool_input` (`command`/`file_path` only), for matching a pending permission prompt against the call that ran |
+| `tool_ran` | PostToolUse | `tool_name`, `tool_use_id`, `tool_input` as in `permission_seen`, for matching a pending permission prompt against the call that ran |
 | `subagent_tool` | PostToolUse inside a subagent | `tool_name` |
 | `tool_failed` | PostToolUseFailure | `tool_name`, `tool_use_id`, `tool_input` |
-| `permission_seen` | PermissionRequest | `tool_name`, `tool_input` (`command`/`file_path` only) |
+| `permission_seen` | PermissionRequest | `tool_name`, `tool_input`: `command` for Bash, `file_path` for Edit, MultiEdit, Write, Read and NotebookEdit (its `notebook_path`), and nothing for any other tool, whose command or path field may not be all it touches |
 | `notification` | Notification | `notification_type` (such as `permission_prompt` or `idle_prompt`), `message` |
 | `subagent_start` | SubagentStart | none |
 | `subagent_stop` | SubagentStop | none |

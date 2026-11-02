@@ -23,6 +23,13 @@ def sid: if $sock then env("HAUNT_SURFACE_ID") else null end;
 def base($e): {v:1, agent:"claude", event:$e, surface_id:sid, session_id, cwd, agent_id, agent_type, permission_mode, nonce:nonce};
 def preview: (.tool_input // {}) | if type == "object" then {command, url, file_path} | with_entries(select(.value != null)) else {} end;
 def tool: {tool_name, tool_use_id, tool_input:preview};
+# What a prompt asks to run, only for tools whose one command or file is all they touch: any other
+# tool (MCP ones included) may do more than a `command` or `file_path` field shows, so it sends none.
+def ask: .tool_name as $t | (.tool_input // {}) | if type != "object" then {}
+  elif $t == "Bash" then {command}
+  elif $t | IN("Edit", "MultiEdit", "Write", "Read") then {file_path}
+  elif $t == "NotebookEdit" then {file_path:.notebook_path}
+  else {} end | with_entries(select(.value != null));
 # Unicode Cf (format) characters, such as bidi overrides and zero-widths, which can disguise text.
 def isfmt: . == 173 or (. >= 1536 and . <= 1541) or . == 1564 or . == 1757 or . == 1807 or (. >= 2192 and . <= 2193) or . == 2274
   or . == 6158 or (. >= 8203 and . <= 8207) or (. >= 8234 and . <= 8238) or (. >= 8288 and . <= 8292) or (. >= 8294 and . <= 8303)
@@ -87,14 +94,14 @@ case "$KIND" in
               (if .tool_name | IN("Edit", "Write", "MultiEdit", "NotebookEdit") then base("file_edited") + {tool_name, tool_input:{file_path:(.tool_input.file_path // .tool_input.notebook_path)}} else empty end),
               (base("tool_done") + tool),
               # Exact input, so a pending permission prompt resolves only against the call that ran.
-              (base("tool_ran") + {tool_name, tool_use_id, tool_input:(preview | del(.url))}),
+              (base("tool_ran") + {tool_name, tool_use_id, tool_input:ask}),
               (if .agent_id then base("subagent_tool") + {tool_name} else empty end)'
         ;;
     post_tool_failure)
         EXPR='base("tool_failed") + tool'
         ;;
     permission_request)
-        EXPR='base("permission_seen") + {tool_name, tool_input:(preview | del(.url))}'
+        EXPR='base("permission_seen") + {tool_name, tool_input:ask}'
         ;;
     notification)
         EXPR='base("notification") + {notification_type, message}'
@@ -116,8 +123,9 @@ bodies() {
         "$LIB ($EXPR) | if \$sock then finalize | if .plugin_version == \"\" then del(.plugin_version) else . end else status end" 2>/dev/null
 }
 
-# The socket is the authenticated path. If it is there, a failed send is dropped rather than downgraded to OSC.
-if [ -n "$SOCK" ] && [ -S "$SOCK" ] && [ -n "${HAUNT_SURFACE_ID:-}" ] && command -v nc > /dev/null; then
+# The socket is the authenticated path. If it is there, a failed send (no nc included) is dropped rather than downgraded to OSC.
+if [ -n "$SOCK" ] && [ -S "$SOCK" ] && [ -n "${HAUNT_SURFACE_ID:-}" ]; then
+    command -v nc > /dev/null || exit 0
     LINES=$(bodies "$SOCK_MAX" true) || exit 0
     [ -n "$LINES" ] && printf '%s\n' "$LINES" | nc -U -w 2 "$SOCK" > /dev/null 2>&1
     exit 0

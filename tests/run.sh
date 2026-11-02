@@ -108,6 +108,21 @@ check "post_tool_failure -> tool_failed" post_tool_failure "{$ENV_JSON,\"tool_na
     "length == 1 and $E and .[0].event == \"tool_failed\" and .[0].tool_name == \"Bash\" and .[0].tool_use_id == \"tu3\" and .[0].tool_input == {command:\"false\"}"
 check "permission_request -> permission_seen" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf build\",\"description\":\"clean\"}}" \
     "length == 1 and $E and .[0].event == \"permission_seen\" and .[0].tool_name == \"Bash\" and .[0].tool_input == {command:\"rm -rf build\"}"
+for t in Edit MultiEdit Write Read; do
+    check "permission_request $t -> its file" permission_request "{$ENV_JSON,\"tool_name\":\"$t\",\"tool_input\":{\"file_path\":\"/w/a.rs\",\"edits\":[{\"old_string\":\"x\",\"new_string\":\"y\"}]}}" \
+        ".[0].tool_input == {file_path:\"/w/a.rs\"}"
+done
+check "permission_request NotebookEdit -> its notebook" permission_request "{$ENV_JSON,\"tool_name\":\"NotebookEdit\",\"tool_input\":{\"notebook_path\":\"/w/n.ipynb\",\"new_source\":\"x\"}}" \
+    ".[0].tool_input == {file_path:\"/w/n.ipynb\"}"
+# Another tool may touch more than its command or path field shows, so haunt gets neither and the terminal answers it.
+check "permission_request MCP tool sends no command or path" permission_request "{$ENV_JSON,\"tool_name\":\"mcp__fs__write\",\"tool_input\":{\"file_path\":\"/w/a\",\"command\":\"x\",\"also\":\"/etc/b\"}}" \
+    "length == 1 and .[0].event == \"permission_seen\" and .[0].tool_input == {}"
+check "permission_request Bash sends no file_path" permission_request "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\",\"file_path\":\"/w/a\"}}" \
+    ".[0].tool_input == {command:\"ls\"}"
+check "post_tool MCP tool_ran matches its permission_seen" post_tool "{$ENV_JSON,\"tool_name\":\"mcp__fs__write\",\"tool_input\":{\"file_path\":\"/w/a\"}}" \
+    "map(.event) == [\"tool_done\",\"tool_ran\"] and .[0].tool_input == {file_path:\"/w/a\"} and .[1].tool_input == {}"
+check "post_tool NotebookEdit tool_ran matches its permission_seen" post_tool "{$ENV_JSON,\"tool_name\":\"NotebookEdit\",\"tool_input\":{\"notebook_path\":\"/w/n.ipynb\"}}" \
+    ".[2].event == \"tool_ran\" and .[2].tool_input == {file_path:\"/w/n.ipynb\"}"
 check "notification" notification "{$ENV_JSON,\"notification_type\":\"idle_prompt\",\"message\":\"Claude is waiting\"}" \
     "length == 1 and $E and .[0].event == \"notification\" and .[0].notification_type == \"idle_prompt\" and .[0].message == \"Claude is waiting\""
 check "subagent_start" subagent_start "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"Explore\"}" \
@@ -193,6 +208,11 @@ done
 listen && kill "$LPID" 2> /dev/null; wait "$LPID" 2> /dev/null
 printf '{"session_id":"s1"}' | HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/dead-tty" "$HOOK" stop > "$TMP/out"
 if [ -S "$TMP/s" ] && [ ! -s "$TMP/out" ] && [ ! -e "$TMP/dead-tty" ]; then ok "dead socket: nothing sent, no OSC"; else bad "dead socket: nothing sent, no OSC" "$(cat "$TMP/out")"; fi
+# No nc to send with is a failed send too.
+mkdir -p "$TMP/nonc"
+for b in jq cat dirname; do ln -sf "$(command -v "$b")" "$TMP/nonc/$b"; done
+printf '{"session_id":"s1"}' | PATH="$TMP/nonc" HAUNT=1 HAUNT_SOCK="$TMP/s" HAUNT_SURFACE_ID=surf1 HAUNT_HOOK_TTY="$TMP/nonc-tty" "$HOOK" stop > "$TMP/out"
+if [ ! -s "$TMP/out" ] && [ ! -e "$TMP/nonc-tty" ]; then ok "socket but no nc: dropped, no OSC"; else bad "socket but no nc: dropped, no OSC" "$(cat "$TMP/out")"; fi
 
 # OSC fallback: status fields and a cut title only, no nonce, at most 250 bytes (Ghostty cuts at 255).
 RUN=osc check "OSC: status fields only" post_tool "{$ENV_JSON,\"agent_id\":\"a9\",\"agent_type\":\"Explore\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tu1\",\"tool_input\":{\"command\":\"ls\"}}" \
