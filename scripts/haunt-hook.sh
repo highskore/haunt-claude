@@ -82,7 +82,7 @@ case "$KIND" in
         EXPR='base("prompt_submit") + {query:.prompt}'
         ;;
     task_created)
-        EXPR='base("task_created") + {task_id:(.task_id | tostring), task_subject}'
+        EXPR='base("task_created") + {task_id:(.task_id | if . == null then null else tostring end), task_subject}'
         ;;
     pre_tool)
         EXPR='(base("tool_start") + tool),

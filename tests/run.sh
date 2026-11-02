@@ -74,6 +74,8 @@ check "prompt_submit" prompt_submit "{$ENV_JSON,\"prompt\":\"fix the bug\"}" \
     "length == 1 and $E and .[0].event == \"prompt_submit\" and .[0].query == \"fix the bug\" and .[0].permission_mode == \"default\""
 check "task_created" task_created "{$ENV_JSON,\"task_id\":7,\"task_subject\":\"step one\"}" \
     "length == 1 and $E and .[0].event == \"task_created\" and .[0].task_id == \"7\" and .[0].task_subject == \"step one\""
+check "task_created without task_id omits task_id" task_created "{$ENV_JSON,\"task_subject\":\"step one\"}" \
+    "length == 1 and $E and .[0].event == \"task_created\" and .[0].task_subject == \"step one\" and (.[0] | has(\"task_id\") | not)"
 check "pre_tool -> tool_start" pre_tool "{$ENV_JSON,\"tool_name\":\"Bash\",\"tool_use_id\":\"tu1\",\"tool_input\":{\"command\":\"ls\",\"description\":\"list\"}}" \
     "length == 1 and $E and .[0].event == \"tool_start\" and .[0].tool_name == \"Bash\" and .[0].tool_use_id == \"tu1\" and .[0].tool_input == {command:\"ls\"}"
 check "pre_tool Agent -> tool_start + subagent_spawn" pre_tool "{$ENV_JSON,\"tool_name\":\"Agent\",\"tool_use_id\":\"tu2\",\"tool_input\":{\"description\":\"find it\",\"prompt\":\"...\"}}" \
