@@ -21,7 +21,7 @@ def env($k): ($ENV[$k] // "") | if . == "" then null else . end;
 def nonce: env("HAUNT_HOOK_NONCE");
 def sid: if $sock then env("HAUNT_SURFACE_ID") else null end;
 def base($e): {v:1, agent:"claude", event:$e, surface_id:sid, session_id, cwd, agent_id, agent_type, permission_mode, nonce:nonce};
-def preview: (.tool_input // {}) | if type == "object" then {command, url, file_path} | with_entries(select(.value != null)) else {} end;
+def preview: (.tool_input // {}) | if type == "object" then {command, url, file_path} | map_values(strings) | with_entries(select(.value != null)) else {} end;
 def tool: {tool_name, tool_use_id, tool_input:preview};
 # What a prompt asks to run, only for tools whose one command or file is all they touch: any other
 # tool (MCP ones included) may do more than a `command` or `file_path` field shows, so it sends none.
@@ -82,14 +82,14 @@ case "$KIND" in
         EXPR='base("prompt_submit") + {query:.prompt}'
         ;;
     task_created)
-        EXPR='base("task_created") + {task_id:(.task_id | tostring), task_subject}'
+        EXPR='base("task_created") + {task_id:(.task_id | if . == null then null else tostring end), task_subject}'
         ;;
     pre_tool)
         EXPR='(base("tool_start") + tool),
               (if .tool_name == "Agent" then base("subagent_spawn") + {agent_type:(.tool_input.subagent_type // "general-purpose"), description:.tool_input.description} else empty end)'
         ;;
     post_tool)
-        EXPR='(if .tool_name == "TaskUpdate" and .tool_input.status then base("task_updated") + {task_id:(.tool_input.taskId | tostring), task_status:.tool_input.status} else empty end),
+        EXPR='(if .tool_name == "TaskUpdate" and .tool_input.status then base("task_updated") + {task_id:(.tool_input.taskId | if . == null then null else tostring end), task_status:.tool_input.status} else empty end),
               # Background launches return before the subagent finishes; only completed results are final.
               (if .tool_name == "Agent" and .tool_response.status == "completed" then base("subagent_result") + {agent_id:.tool_response.agentId, agent_type:.tool_response.agentType, description:.tool_input.description, tool_count:.tool_response.totalToolUseCount, duration_ms:.tool_response.totalDurationMs} else empty end),
               (if .tool_name == "ExitPlanMode" then base("plan_exit") + {summary:.tool_input.plan} else empty end),
