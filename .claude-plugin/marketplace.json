@@ -1,0 +1,14 @@
+{
+  "name": "haunt",
+  "description": "Haunt adapter for Claude Code: reports agent events to the Haunt terminal",
+  "owner": {
+    "name": "Luka Racki"
+  },
+  "plugins": [
+    {
+      "name": "haunt",
+      "source": "./",
+      "description": "Reports Claude Code agent events to the haunt terminal"
+    }
+  ]
+}
