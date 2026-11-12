@@ -2,7 +2,7 @@
   "name": "haunt",
   "description": "Haunt adapter for Claude Code: reports agent events to the Haunt terminal",
   "owner": {
-    "name": "Luka Racki"
+    "name": "highskore"
   },
   "plugins": [
     {
