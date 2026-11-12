@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="docs/icon.png" width="96" alt="">
+
 # haunt-claude
 
-The Claude Code adapter for [Haunt](../../haunt), a macOS terminal for managing coding agents. It is a Claude Code plugin whose hooks report session, task, subagent, tool and permission events to Haunt. Events go over Haunt's Unix socket as NDJSON when there is one, and as OSC 777 notifications otherwise. haunt-core parses both (`core/src/event.rs` in the haunt repo).
+**Reports Claude Code sessions to Haunt from its own hooks.**
+
+[![Haunt](https://img.shields.io/badge/Haunt-Claude%20Code%20adapter-D97757)](https://github.com/highskore/haunt-hackathon)
+![bash + jq](https://img.shields.io/badge/hooks-bash%20%2B%20jq-111)
+[![License](https://img.shields.io/badge/license-see%20LICENSE-blue)](LICENSE)
+
+</div>
+
+The Claude Code adapter for [Haunt](https://github.com/highskore/haunt), a macOS terminal for managing coding agents. It is a Claude Code plugin whose hooks report session, task, subagent, tool and permission events to Haunt. Events go over Haunt's Unix socket as NDJSON when there is one, and as OSC 777 notifications otherwise. haunt-core parses both (`core/src/event.rs` in the haunt repo).
 
 Each agent Haunt supports has its own adapter repo; they all emit the same agent-neutral event format. See [SPEC.md](SPEC.md).
 
