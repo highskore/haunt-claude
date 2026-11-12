@@ -92,7 +92,7 @@ case "$KIND" in
         EXPR='(if .tool_name == "TaskUpdate" and .tool_input.status then base("task_updated") + {task_id:(.tool_input.taskId | if . == null then null else tostring end), task_status:.tool_input.status} else empty end),
               # Background launches return before the subagent finishes; only completed results are final.
               (if .tool_name == "Agent" and .tool_response.status == "completed" then base("subagent_result") + {agent_id:.tool_response.agentId, agent_type:.tool_response.agentType, description:.tool_input.description, tool_count:.tool_response.totalToolUseCount, duration_ms:.tool_response.totalDurationMs} else empty end),
-              (if .tool_name == "ExitPlanMode" then base("plan_exit") + {summary:.tool_input.plan} else empty end),
+              (if .tool_name == "ExitPlanMode" then base("plan_exit") + {summary:(.tool_input.plan // .tool_response.plan)} else empty end),
               (if .tool_name == "AskUserQuestion" then (base("question_answered") + {summary:(try ([(.tool_response.answers // .tool_input.answers // {})[] | tostring] | join(", ")) catch "")}) | select(.summary != "") else empty end),
               (if .tool_name == "TodoWrite" then base("todos_written") + {tool_count:(.tool_input.todos | length), todos_done:([.tool_input.todos[]? | select(.status == "completed")] | length)} else empty end),
               (if .tool_name | IN("Edit", "Write", "MultiEdit", "NotebookEdit") then base("file_edited") + {tool_name, tool_input:{file_path:(.tool_input.file_path // .tool_input.notebook_path)}} else empty end),

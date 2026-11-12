@@ -98,6 +98,9 @@ check "post_tool Agent background launch skips subagent_result" post_tool "{$ENV
     "map(.event) == [\"tool_done\",\"tool_ran\"]"
 check "post_tool ExitPlanMode -> plan_exit" post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"1. do it\"}}" \
     "$E and .[0].event == \"plan_exit\" and .[0].summary == \"1. do it\""
+# Claude Code 2.1.3xx sends ExitPlanMode's PostToolUse with an empty tool_input and the plan in tool_response.
+check "post_tool ExitPlanMode, plan in tool_response -> plan_exit" post_tool "{$ENV_JSON,\"tool_name\":\"ExitPlanMode\",\"tool_input\":{},\"tool_response\":{\"plan\":\"1. do it\",\"filePath\":\"/w/.plans/p.md\"}}" \
+    "$E and .[0].event == \"plan_exit\" and .[0].summary == \"1. do it\""
 check "post_tool AskUserQuestion -> question_answered" post_tool "{$ENV_JSON,\"tool_name\":\"AskUserQuestion\",\"tool_input\":{},\"tool_response\":{\"answers\":{\"q1\":\"yes\",\"q2\":\"later\"}}}" \
     "$E and .[0].event == \"question_answered\" and .[0].summary == \"yes, later\""
 check "post_tool AskUserQuestion without answers skips" post_tool "{$ENV_JSON,\"tool_name\":\"AskUserQuestion\",\"tool_input\":{}}" \
